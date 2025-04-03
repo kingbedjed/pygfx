@@ -1,7 +1,7 @@
 import wgpu
 import ctypes
 
-def compute_with_buffers(input_arrays, output_arrays, shader, n=None):
+def compute_with_buffers_no_read(input_arrays, output_arrays, shader, n=None):
     """Apply the given compute shader to the given input_arrays and return
     output arrays. Both input and output arrays are represented on the GPU
     using storage buffer objects.
@@ -171,18 +171,7 @@ def compute_with_buffers(input_arrays, output_arrays, shader, n=None):
     compute_pass.end()
     device.queue.submit([command_encoder.finish()])
 
-    # Read the current data of the output buffers
-    output = {}
-    for index, info in output_infos.items():
-        buffer = buffers[index]
-        # m = buffer.read_data()  # old API
-        m = device.queue.read_buffer(buffer)  # slow, can also be done async
-        if "ctypes_array_type" in info:
-            output[index] = info["ctypes_array_type"].from_buffer(m)
-        else:
-            output[index] = m.cast(info["format"], shape=info["shape"])
-
-    return output
+    return buffers, output_infos
 
 
 FORMAT_SIZES = {"b": 1, "B": 1, "h": 2, "H": 2, "i": 4, "I": 4, "e": 2, "f": 4}
@@ -221,8 +210,6 @@ from pygfx.utils import array_from_shadertype
 renderer_uniform_type = dict(last_i="i4")
 
 
-from wgpu.utils.compute import compute_with_buffers
-
 # Compute shader for histogram computation
 histogram_shader = """
 @group(0) @binding(0)
@@ -239,7 +226,7 @@ var<storage, read_write> histogram_l: array<atomic<u32>>;
 var<storage, read> image_shape: array<u32>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {  // wgsl
     let width = image_shape[0];
     let height = image_shape[1];
     let total_pixels = width * height;
@@ -289,28 +276,49 @@ def compute_histogram_gpu(img):
     }
     
     # Run compute shader
-    out = compute_with_buffers(
+    buffers, output_infos = compute_with_buffers_no_read(
         input_arrays=bindings,
-        output_arrays={1: (256, "f"), 2: (256, "f"), 3: (256, "f"), 4: (256, "f")},
+        output_arrays={1: (256, "I"), 2: (256, "I"), 3: (256, "I"), 4: (256, "I")},
         shader=histogram_shader,
         n=(img_flat.shape[0] // 256 + 1, 1, 1),
     )
+
+    hist_r_gpu = buffers[1]
+    hist_g_gpu = buffers[2]
+    hist_b_gpu = buffers[3]
+    hist_l_gpu = buffers[4]
+
+
+    device = wgpu.utils.get_default_device()
+    # Read the current data of the output buffers
+    out = {}
+    for index, info in output_infos.items():
+        buffer = buffers[index]
+        # m = buffer.read_data()  # old API
+        m = device.queue.read_buffer(buffer)  # slow, can also be done async
+        if "ctypes_array_type" in info:
+            out[index] = info["ctypes_array_type"].from_buffer(m)
+        else:
+            out[index] = m.cast(info["format"], shape=info["shape"])
+
+
     
     # Get histograms from output
-    hist_r = np.frombuffer(out[1], dtype=np.float32)
-    hist_g = np.frombuffer(out[2], dtype=np.float32)
-    hist_b = np.frombuffer(out[3], dtype=np.float32)
-    hist_l = np.frombuffer(out[4], dtype=np.float32)
+    hist_r = np.frombuffer(out[1], dtype=np.uint32)
+    hist_g = np.frombuffer(out[2], dtype=np.uint32)
+    hist_b = np.frombuffer(out[3], dtype=np.uint32)
+    hist_l = np.frombuffer(out[4], dtype=np.uint32)
     
     # Normalize histograms
-    max_val = max(hist_r.max(), hist_g.max(), hist_b.max(), hist_l.max())
-    hist_r /= max_val
-    hist_g /= max_val
-    hist_b /= max_val
-    hist_l /= max_val
+    # max_val = max(hist_r.max(), hist_g.max(), hist_b.max(), hist_l.max())
+    # hist_r /= max_val
+    # hist_g /= max_val
+    # hist_b /= max_val
+    # hist_l /= max_val
     
     computation_time = time.time() - start_time
-    return hist_r, hist_g, hist_b, hist_l, computation_time
+
+    return hist_r, hist_g, hist_b, hist_l, computation_time, hist_r_gpu, hist_g_gpu, hist_b_gpu, hist_l_gpu
 
 # Get list of available standard images
 standard_images = [
@@ -414,10 +422,14 @@ class HistogramMaterial(gfx.LineMaterial):
         absolute_scale="f4",
     )
 
-    def __init__(self, *args, absolute_scale=1.0, log_scale=False, **kwargs):
+    def __init__(self, *args, absolute_scale=1.0, log_scale=False, hist_r_gpu=None, hist_g_gpu=None, hist_b_gpu=None, hist_l_gpu=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.log_scale = log_scale
         self.absolute_scale = absolute_scale
+        self.hist_r_gpu = hist_r_gpu
+        self.hist_g_gpu = hist_g_gpu
+        self.hist_b_gpu = hist_b_gpu
+        self.hist_l_gpu = hist_l_gpu
 
     @property
     def log_scale(self):
@@ -451,6 +463,10 @@ class HistogramShader(LineShader):
         self["absolute_scale"] = material.absolute_scale
 
         self["instanced"] = False
+        self["hist_r_gpu"] = material.hist_r_gpu
+        self["hist_g_gpu"] = material.hist_g_gpu
+        self["hist_b_gpu"] = material.hist_b_gpu
+        self["hist_l_gpu"] = material.hist_l_gpu
 
     def get_bindings(self, wobject, shared):
         material = wobject.material
@@ -486,6 +502,10 @@ class HistogramShader(LineShader):
             Binding("u_material", "buffer/uniform", material.uniform_buffer),
             Binding("u_renderer", "buffer/uniform", uniform_buffer),
             Binding("s_positions", rbuffer, positions1, "VERTEX"),
+            Binding("s_hist_r_gpu", rbuffer, self["hist_r_gpu"], "COMPUTE"),
+            # Binding("s_hist_g_gpu", rbuffer, self["hist_g_gpu"], "COMPUTE"),
+            # Binding("s_hist_b_gpu", rbuffer, self["hist_b_gpu"], "COMPUTE"),
+            # Binding("s_hist_l_gpu", rbuffer, self["hist_l_gpu"], "COMPUTE"),
         ]
 
         # Per-vertex color, colormap, or a uniform color?
@@ -615,9 +635,14 @@ vertex_color[1, :256, 1] = 1
 vertex_color[2, :256, 2] = 1
 vertex_color[3, :256, :] = 1
 
+
+(hist_r, hist_g, hist_b, hist_l, computation_time, hist_r_gpu, 
+ hist_g_gpu, hist_b_gpu, hist_l_gpu) = compute_histogram_gpu(img)
+
 hist_line = Histogram(
     gfx.Geometry(positions=histogram_data, colors=vertex_color.reshape(-1, 3)),
-    HistogramMaterial(color=(1, 1, 1), color_mode="vertex", absolute_scale=255),
+    HistogramMaterial(color=(1, 1, 1), color_mode="vertex", absolute_scale=.1, 
+                      hist_r_gpu=hist_r_gpu, hist_g_gpu=hist_g_gpu, hist_b_gpu=hist_b_gpu, hist_l_gpu=hist_l_gpu),
 )
 scene_hist.add(hist_line)
 
@@ -634,7 +659,7 @@ def update_histogram(hist_r, hist_g, hist_b, hist_l):
     positions[3, :256, 1] = hist_l
     hist_line.geometry.positions.update_range()
 
-computation_time = 0
+# computation_time = 0
 
 def draw_imgui():
     global current_image_index
@@ -663,7 +688,8 @@ def draw_imgui():
             image_object.geometry.grid = gfx.Texture(img, dim=2)
 
             # Trigger recomputation of the histogram using GPU
-            hist_r, hist_g, hist_b, hist_l, computation_time = compute_histogram_gpu(img)
+            (hist_r, hist_g, hist_b, hist_l, computation_time, hist_r_gpu, 
+             hist_g_gpu, hist_b_gpu, hist_l_gpu) = compute_histogram_gpu(img)
             update_histogram(hist_r, hist_g, hist_b, hist_l)
 
         imgui.text(f"GPU Histogram computation time: {computation_time * 1000:.1f} ms")
@@ -689,7 +715,8 @@ def map_screen_to_world(pos, viewport_size):
 gui_renderer = ImguiRenderer(renderer.device, canvas)
 
 # Compute histogram at startup to have correct values
-hist_r, hist_g, hist_b, hist_l, computation_time = compute_histogram_gpu(img)
+(hist_r, hist_g, hist_b, hist_l, computation_time, hist_r_gpu, 
+ hist_g_gpu, hist_b_gpu, hist_l_gpu) = compute_histogram_gpu(img)
 update_histogram(hist_r, hist_g, hist_b, hist_l)
 
 
