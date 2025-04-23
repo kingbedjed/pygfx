@@ -17,15 +17,15 @@ import wgpu
 from pygfx.utils.compute import ComputeShader
 
 shader_src = """
-// @group(0) @binding(0) var imageTexture: texture_2d<f32>;
-// @group(0) @binding(1) var<storage, read_write> sa_bins: array<atomic<u32>>;
+@group(0) @binding(0) var imageTexture: texture_2d<f32>;
 
 @compute @workgroup_size(1)
-fn calc_points() {}
+fn calc_points() {
+    let size = textureDimensions(imageTexture, 0);
+}
 """
 
-
-im = np.ascontiguousarray(iio.imread("imageio:astronaut.png")[..., 0]).astype(np.uint32)
+im = np.ascontiguousarray(iio.imread("imageio:astronaut.png"))
 
 image_texture = gfx.Texture(
     im,
@@ -81,7 +81,7 @@ calc_shader = ComputeShader(
     entry_point="calc_points",
     # report_time=True,
 )
-# calc_shader.set_resource(0, image.geometry.grid)
+calc_shader.set_resource(0, image.geometry.grid)
 # calc_shader.set_resource(1, point_coords_buffer, clear=True)
 
 calc_shader.dispatch(1)
