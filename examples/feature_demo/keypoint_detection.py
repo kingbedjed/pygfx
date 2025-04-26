@@ -30,13 +30,14 @@ shader_src = """
 @group(0) @binding(0) var imageTexture: texture_2d<f32>;
 @group(0) @binding(1) var<storage, read_write> points_buffer: array<f32>;
 
-@compute @workgroup_size(100)
+@compute @workgroup_size(10, 10)
 fn calc_points(
-    @builtin(local_invocation_index) local_invocation_index: u32
+    @builtin(local_invocation_index) local_invocation_index: u32,
+    @builtin(local_invocation_id) local_invocation_id: vec3u
 ) {
     let size = textureDimensions(imageTexture, 0);
-    points_buffer[local_invocation_index * 3] = f32(local_invocation_index) * 5.0;
-    points_buffer[local_invocation_index * 3 + 1] = f32(local_invocation_index) * 5.0;
+    points_buffer[local_invocation_index * 3] = f32(local_invocation_id.x) * 10.0;
+    points_buffer[local_invocation_index * 3 + 1] = f32(local_invocation_id.y) * 10.0;
     points_buffer[local_invocation_index * 3 + 2] = f32(1);
 }
 """
