@@ -16,12 +16,28 @@ import numpy as np
 import wgpu
 from pygfx.utils.compute import ComputeShader
 
+# About workgroup/invocation id's:
+#
+# * local_invocation_id: the vec3 indicating the current invocation into the
+#   workgroup, as specified using @workgroup_size,  i.e. its position in the
+#   workgroup grid.
+# * local_invocation_index: the u32 represening the 'flat' local_invocation_id.
+# * workgroup_id: the vec3 indicating the position of the workgroup in overall
+#   compute shader grid, as specified by dispatch_workgroups().
+# * global_invocation_id: workgroup_id * workgroup_size + local_invocation_id.
+
 shader_src = """
 @group(0) @binding(0) var imageTexture: texture_2d<f32>;
+@group(0) @binding(1) var<storage, read_write> points_buffer: array<f32>;
 
-@compute @workgroup_size(1)
-fn calc_points() {
+@compute @workgroup_size(100)
+fn calc_points(
+    @builtin(local_invocation_index) local_invocation_index: u32
+) {
     let size = textureDimensions(imageTexture, 0);
+    points_buffer[local_invocation_index * 3] = f32(local_invocation_index) * 5.0;
+    points_buffer[local_invocation_index * 3 + 1] = f32(local_invocation_index) * 5.0;
+    points_buffer[local_invocation_index * 3 + 2] = f32(1);
 }
 """
 
@@ -54,7 +70,7 @@ point_coords_buffer = gfx.Buffer(
     usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
 )
 
-sizes = np.arange(1, num_points + 1, dtype=np.float32)
+sizes = np.ones(shape=num_points, dtype=np.float32) * 10
 
 points = gfx.Points(
     gfx.Geometry(
@@ -82,7 +98,7 @@ calc_shader = ComputeShader(
     # report_time=True,
 )
 calc_shader.set_resource(0, image.geometry.grid)
-# calc_shader.set_resource(1, point_coords_buffer, clear=True)
+calc_shader.set_resource(1, point_coords_buffer, clear=True)
 
 calc_shader.dispatch(1)
 
