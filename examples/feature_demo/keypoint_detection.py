@@ -43,9 +43,10 @@ fn calc_points(
     @builtin(local_invocation_id) local_invocation_id: vec3u,
     @builtin(workgroup_id) workgroup_id: vec3u,
     @builtin(global_invocation_id) global_invocation_id: vec3u,
+    @builtin(num_workgroups) num_workgroups: vec3u,
 ) {
     let size = textureDimensions(imageTexture, 0);
-    let vector_index = workgroup_id.y * chunkWidth * chunkHeight * num_workgroups_x +
+    let vector_index = workgroup_id.y * chunkWidth * chunkHeight * num_workgroups.x +
                        workgroup_id.x * chunkWidth * chunkHeight +
                        local_invocation_index;
     points_coords_buffer[vector_index * 3] = f32(global_invocation_id.x) * 10.0;
@@ -53,15 +54,11 @@ fn calc_points(
     points_coords_buffer[vector_index * 3 + 2] = f32(1);
 
     points_color_buffer[vector_index * 4] = f32(local_invocation_index) / f32(chunkWidth * chunkHeight);
-    points_color_buffer[vector_index * 4 + 1] = f32(workgroup_id.x) / f32(num_workgroups_x);
-    points_color_buffer[vector_index * 4 + 2] = f32(workgroup_id.y) / f32(num_workgroups_y);
+    points_color_buffer[vector_index * 4 + 1] = f32(workgroup_id.x) / f32(num_workgroups.x);
+    points_color_buffer[vector_index * 4 + 2] = f32(workgroup_id.y) / f32(num_workgroups.y);
     points_color_buffer[vector_index * 4 + 3] = f32(1);
 }
-""".replace(
-    "num_workgroups_x", str(num_workgroups_x)
-).replace(
-    "num_workgroups_y", str(num_workgroups_y)
-)
+"""
 
 im = np.ascontiguousarray(iio.imread("imageio:astronaut.png"))
 
@@ -108,8 +105,8 @@ points = gfx.Points(
         colors=point_colors_buffer,
     ),
     gfx.PointsMaterial(
-        color=(0, 1, 1, 1),
-        size=10,
+        # color=(0, 1, 1, 1),
+        # size=1,
         size_space="world",
         size_mode="vertex",
         color_mode="vertex",
