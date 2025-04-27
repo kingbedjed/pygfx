@@ -28,17 +28,28 @@ from pygfx.utils.compute import ComputeShader
 
 shader_src = """
 @group(0) @binding(0) var imageTexture: texture_2d<f32>;
-@group(0) @binding(1) var<storage, read_write> points_buffer: array<f32>;
+@group(0) @binding(1) var<storage, read_write> points_coords_buffer: array<f32>;
+@group(0) @binding(2) var<storage, read_write> points_color_buffer: array<f32>;
 
-@compute @workgroup_size(10, 10)
+const chunkWidth = 10u;
+const chunkHeight = 10u;
+
+@compute @workgroup_size(chunkWidth, chunkHeight, 1)
 fn calc_points(
     @builtin(local_invocation_index) local_invocation_index: u32,
-    @builtin(local_invocation_id) local_invocation_id: vec3u
+    @builtin(local_invocation_id) local_invocation_id: vec3u,
+    @builtin(workgroup_id) workgroup_id: vec3u,
+    @builtin(global_invocation_id) global_invocation_id: vec3u,
 ) {
     let size = textureDimensions(imageTexture, 0);
-    points_buffer[local_invocation_index * 3] = f32(local_invocation_id.x) * 10.0;
-    points_buffer[local_invocation_index * 3 + 1] = f32(local_invocation_id.y) * 10.0;
-    points_buffer[local_invocation_index * 3 + 2] = f32(1);
+    points_coords_buffer[local_invocation_index * 3] = f32(local_invocation_id.x) * 10.0;
+    points_coords_buffer[local_invocation_index * 3 + 1] = f32(local_invocation_id.y) * 10.0;
+    points_coords_buffer[local_invocation_index * 3 + 2] = f32(1);
+
+    points_color_buffer[local_invocation_index * 4] = f32(local_invocation_id.x) / f32(chunkWidth);
+    points_color_buffer[local_invocation_index * 4 + 1] = f32(local_invocation_id.y) / f32(chunkHeight);
+    points_color_buffer[local_invocation_index * 4 + 2] = f32(0);
+    points_color_buffer[local_invocation_index * 4 + 3] = f32(1);
 }
 """
 
@@ -71,18 +82,27 @@ point_coords_buffer = gfx.Buffer(
     usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
 )
 
+point_colors_buffer = gfx.Buffer(
+    nbytes=num_points * 4 * 4,
+    nitems=num_points,
+    format="4xf4",
+    usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+)
+
 sizes = np.ones(shape=num_points, dtype=np.float32) * 10
 
 points = gfx.Points(
     gfx.Geometry(
         positions=point_coords_buffer,
         sizes=sizes,
+        colors=point_colors_buffer,
     ),
     gfx.PointsMaterial(
         color=(0, 1, 1, 1),
         size=10,
         size_space="world",
         size_mode="vertex",
+        color_mode="vertex",
     ),
 )
 scene.add(points)
@@ -100,8 +120,9 @@ calc_shader = ComputeShader(
 )
 calc_shader.set_resource(0, image.geometry.grid)
 calc_shader.set_resource(1, point_coords_buffer, clear=True)
+calc_shader.set_resource(2, point_colors_buffer, clear=True)
 
-calc_shader.dispatch(1)
+calc_shader.dispatch(1, 1, 1)
 
 if __name__ == "__main__":
     canvas.request_draw(lambda: renderer.render(scene, camera))
