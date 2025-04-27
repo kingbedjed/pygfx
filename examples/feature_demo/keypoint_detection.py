@@ -26,6 +26,9 @@ from pygfx.utils.compute import ComputeShader
 #   compute shader grid, as specified by dispatch_workgroups().
 # * global_invocation_id: workgroup_id * workgroup_size + local_invocation_id.
 
+num_workgroups_x = 5
+num_workgroups_y = 5
+
 shader_src = """
 @group(0) @binding(0) var imageTexture: texture_2d<f32>;
 @group(0) @binding(1) var<storage, read_write> points_coords_buffer: array<f32>;
@@ -42,16 +45,23 @@ fn calc_points(
     @builtin(global_invocation_id) global_invocation_id: vec3u,
 ) {
     let size = textureDimensions(imageTexture, 0);
-    points_coords_buffer[local_invocation_index * 3] = f32(local_invocation_id.x) * 10.0;
-    points_coords_buffer[local_invocation_index * 3 + 1] = f32(local_invocation_id.y) * 10.0;
-    points_coords_buffer[local_invocation_index * 3 + 2] = f32(1);
+    let vector_index = workgroup_id.y * chunkWidth * chunkHeight * num_workgroups_x +
+                       workgroup_id.x * chunkWidth * chunkHeight +
+                       local_invocation_index;
+    points_coords_buffer[vector_index * 3] = f32(global_invocation_id.x) * 10.0;
+    points_coords_buffer[vector_index * 3 + 1] = f32(global_invocation_id.y) * 10.0;
+    points_coords_buffer[vector_index * 3 + 2] = f32(1);
 
-    points_color_buffer[local_invocation_index * 4] = f32(local_invocation_id.x) / f32(chunkWidth);
-    points_color_buffer[local_invocation_index * 4 + 1] = f32(local_invocation_id.y) / f32(chunkHeight);
-    points_color_buffer[local_invocation_index * 4 + 2] = f32(0);
-    points_color_buffer[local_invocation_index * 4 + 3] = f32(1);
+    points_color_buffer[vector_index * 4] = f32(local_invocation_index) / f32(chunkWidth * chunkHeight);
+    points_color_buffer[vector_index * 4 + 1] = f32(workgroup_id.x) / f32(num_workgroups_x);
+    points_color_buffer[vector_index * 4 + 2] = f32(workgroup_id.y) / f32(num_workgroups_y);
+    points_color_buffer[vector_index * 4 + 3] = f32(1);
 }
-"""
+""".replace(
+    "num_workgroups_x", str(num_workgroups_x)
+).replace(
+    "num_workgroups_y", str(num_workgroups_y)
+)
 
 im = np.ascontiguousarray(iio.imread("imageio:astronaut.png"))
 
@@ -73,7 +83,7 @@ image = gfx.Image(
 )
 scene.add(image)
 
-num_points = 100
+num_points = 100 * num_workgroups_x * num_workgroups_y
 
 point_coords_buffer = gfx.Buffer(
     nbytes=num_points * 3 * 4,
@@ -122,7 +132,7 @@ calc_shader.set_resource(0, image.geometry.grid)
 calc_shader.set_resource(1, point_coords_buffer, clear=True)
 calc_shader.set_resource(2, point_colors_buffer, clear=True)
 
-calc_shader.dispatch(1, 1, 1)
+calc_shader.dispatch(num_workgroups_x, num_workgroups_y, 1)
 
 if __name__ == "__main__":
     canvas.request_draw(lambda: renderer.render(scene, camera))
